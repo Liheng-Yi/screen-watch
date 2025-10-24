@@ -220,9 +220,12 @@ class PokerMonitor:
         if rank1 == 'A' or rank2 == 'A':
             return False, f"Ace"
         
-        # Don't fold if has a King
+        # Don't fold if has a King (but exclude weak Kings: K2-K9)
         if rank1 == 'K' or rank2 == 'K':
-            return False, f"King"
+            other_card = rank2 if rank1 == 'K' else rank1
+            weak_kickers = {'2', '3', '4'}
+            if other_card not in weak_kickers:
+                return False, f"King"
         
         # Don't fold if both cards are high cards (A, K, Q, J)
         if rank1 in high_cards and rank2 in high_cards:
@@ -236,11 +239,13 @@ class PokerMonitor:
         val1 = rank_values.get(rank1, 0)
         val2 = rank_values.get(rank2, 0)
         if abs(val1 - val2) == 1:
-            return False, f"Connector"
+            # Exclude weak connectors: 2-3, 3-4, 4-5
+            min_val = min(val1, val2)
+            if min_val >= 5:  # Only play connectors starting from 5-6 and up
+                return False, f"Connector"
         
-        # Special case: A-2 is also a connector
-        if (rank1 == 'A' and rank2 == '2') or (rank1 == '2' and rank2 == 'A'):
-            return False, f"Connector"
+        # Special case: A-2 is also a connector (but it's weak, so we fold it)
+        # Removed A-2 connector logic to fold it
         
         # Fold everything else
         return True, f"FOLD"
