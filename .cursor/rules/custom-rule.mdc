@@ -1,0 +1,5 @@
+---
+description: Don't add .md files to explain what did you do
+globs:
+alwaysApply: true
+---
