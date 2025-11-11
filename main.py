@@ -29,6 +29,8 @@ class PokerMonitor:
         self.capture2 = None
         self.fold_button_position = None
         self.is_running = False
+        self.preview_enabled = True
+        self._preview_warning_printed = False
         
         # Load saved settings if they exist
         self.load_settings()
@@ -314,7 +316,7 @@ class PokerMonitor:
                         last_hand = current_hand
                     
                     # Show live preview
-                    if show_preview:
+                    if show_preview and self.preview_enabled:
                         # Create combined visualization
                         h1, w1 = img1.shape[:2]
                         h2, w2 = img2.shape[:2]
@@ -355,14 +357,21 @@ class PokerMonitor:
                         
                         # Show window with always on top flag
                         window_name = 'Poker Monitor - Press Q to quit'
-                        cv2.imshow(window_name, display_img)
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
-                        
-                        # Check for quit key
-                        key = cv2.waitKey(1) & 0xFF
-                        if key == ord('q') or key == ord('Q') or key == 27:  # Q or ESC
-                            print("\nStopping monitoring...")
-                            break
+                        try:
+                            cv2.imshow(window_name, display_img)
+                            cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+                            
+                            # Check for quit key
+                            key = cv2.waitKey(1) & 0xFF
+                            if key == ord('q') or key == ord('Q') or key == 27:  # Q or ESC
+                                print("\nStopping monitoring...")
+                                break
+                        except cv2.error as e:
+                            self.preview_enabled = False
+                            if not self._preview_warning_printed:
+                                print("\n⚠️  OpenCV preview not available on this system. Disabling preview window.")
+                                print(f"   Details: {e}")
+                                self._preview_warning_printed = True
                 
                 # Maintain frame rate
                 elapsed = time.time() - start_time
@@ -373,8 +382,11 @@ class PokerMonitor:
             print("\n\nMonitoring stopped by user")
         finally:
             self.is_running = False
-            if show_preview:
-                cv2.destroyAllWindows()
+            if show_preview and self.preview_enabled:
+                try:
+                    cv2.destroyAllWindows()
+                except cv2.error:
+                    pass
     
     def show_menu(self):
         """Show interactive menu."""

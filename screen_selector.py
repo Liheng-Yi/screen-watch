@@ -38,77 +38,14 @@ class ScreenSelector:
         return monitor_info
     
     def choose_monitor(self):
-        """Show a dialog to choose which monitor to use."""
+        """Automatically use the first monitor (primary monitor)."""
         monitors = self.get_monitors_info()
         
-        if len(monitors) == 1:
+        if len(monitors) >= 1:
             print(f"Using Monitor 1: {monitors[0]['width']}x{monitors[0]['height']}")
             return monitors[0]
         
-        # Create selection window
-        root = tk.Tk()
-        root.title("Select Monitor")
-        root.geometry("500x400")
-        root.configure(bg='#2b2b2b')
-        
-        selected_monitor = {'monitor': None}
-        
-        # Title
-        title_label = tk.Label(
-            root,
-            text="Select Monitor for Poker Detection",
-            font=('Arial', 16, 'bold'),
-            bg='#2b2b2b',
-            fg='white'
-        )
-        title_label.pack(pady=20)
-        
-        # Info label
-        info_label = tk.Label(
-            root,
-            text=f"Detected {len(monitors)} monitor(s). Choose which one to monitor:",
-            font=('Arial', 11),
-            bg='#2b2b2b',
-            fg='#cccccc'
-        )
-        info_label.pack(pady=10)
-        
-        # Frame for buttons
-        button_frame = tk.Frame(root, bg='#2b2b2b')
-        button_frame.pack(pady=20, fill=tk.BOTH, expand=True)
-        
-        def select_monitor(monitor):
-            selected_monitor['monitor'] = monitor
-            root.quit()
-            root.destroy()
-        
-        # Create button for each monitor with preview
-        for monitor in monitors:
-            frame = tk.Frame(button_frame, bg='#3b3b3b', relief=tk.RAISED, borderwidth=2)
-            frame.pack(pady=10, padx=20, fill=tk.X)
-            
-            # Monitor info
-            info_text = f"Monitor {monitor['number']}\n"
-            info_text += f"Resolution: {monitor['width']} x {monitor['height']}\n"
-            info_text += f"Position: ({monitor['left']}, {monitor['top']})"
-            
-            btn = tk.Button(
-                frame,
-                text=info_text,
-                font=('Arial', 12),
-                bg='#4a4a4a',
-                fg='white',
-                activebackground='#5a5a5a',
-                activeforeground='white',
-                command=lambda m=monitor: select_monitor(m),
-                height=4,
-                cursor='hand2'
-            )
-            btn.pack(pady=5, padx=5, fill=tk.X)
-        
-        root.mainloop()
-        
-        return selected_monitor['monitor']
+        return None
         
     def select_region(self, monitor=None):
         """Launch fullscreen overlay to select a region.

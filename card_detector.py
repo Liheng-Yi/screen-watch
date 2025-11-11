@@ -6,6 +6,14 @@ from typing import List, Tuple, Optional
 import pytesseract
 import os
 
+# Try to import EasyOCR (more accurate)
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    EASYOCR_AVAILABLE = False
+    print("Warning: EasyOCR not available. Using Tesseract only. Install with: pip install easyocr")
+
 
 class CardDetector:
     """Detects playing cards from screen captures."""
@@ -15,22 +23,34 @@ class CardDetector:
         # Set tesseract path if needed (Windows)
         pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
         
+        # Initialize EasyOCR reader if available
+        self.easyocr_reader = None
+        if EASYOCR_AVAILABLE:
+            try:
+                # Initialize with English only for speed
+                self.easyocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+                print("EasyOCR initialized successfully")
+            except Exception as e:
+                print(f"Failed to initialize EasyOCR: {e}")
+                self.easyocr_reader = None
+        
         self.rank_map = {
             '2': '2', '3': '3', '4': '4', '5': '5', '6': '6',
             '7': '7', '8': '8', '9': '9', '10': '10',
             'J': 'J', 'Q': 'Q', 'K': 'K', 'A': 'A',
             # Common OCR misreads
-            'T': '10', 'I': '1', 'O': '0', 'l': '1', '|': '1'
+            'T': '10', 'I': '1', 'O': '0', 'l': '1', '|': '1', 'i': '1'
         }
         
         self.valid_ranks = {'2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'}
         
-    def preprocess_image(self, img: np.ndarray) -> np.ndarray:
+    def preprocess_image(self, img: np.ndarray, denoise: bool = True) -> np.ndarray:
         """
         Preprocess image for better card detection.
         
         Args:
             img: Input image
+            denoise: Whether to apply denoising (can be slow)
             
         Returns:
             Preprocessed image
@@ -41,10 +61,15 @@ class CardDetector:
         # Apply threshold to get binary image
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # Denoise
-        denoised = cv2.fastNlMeansDenoising(thresh)
+        # Denoise if requested (can be slow)
+        if denoise:
+            thresh = cv2.fastNlMeansDenoising(thresh)
         
-        return denoised
+        # Apply morphological operations to clean up
+        kernel = np.ones((2, 2), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        
+        return thresh
     
     def find_card_regions(self, img: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """
@@ -147,10 +172,98 @@ class CardDetector:
         
         return detected_cards
     
+    def _extract_ranks_easyocr(self, img: np.ndarray) -> List[str]:
+        """
+        Extract card ranks using EasyOCR (more accurate).
+        
+        Args:
+            img: Preprocessed image
+            
+        Returns:
+            List of detected valid ranks
+        """
+        if not self.easyocr_reader:
+            return []
+        
+        detected_ranks = []
+        
+        try:
+            # Convert grayscale to BGR if needed (EasyOCR expects color images)
+            if len(img.shape) == 2:
+                img_color = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            else:
+                img_color = img
+            
+            # Try multiple preprocessing variants
+            variants = []
+            
+            # Convert to grayscale
+            gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+            
+            # Variant 1: Otsu thresholding
+            _, binary1 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            variants.append(binary1)
+            
+            # Variant 2: Inverted Otsu
+            variants.append(cv2.bitwise_not(binary1))
+            
+            # Variant 3: High threshold for white text
+            _, binary2 = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+            variants.append(binary2)
+            
+            # Variant 4: Adaptive threshold
+            adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                            cv2.THRESH_BINARY, 11, 2)
+            variants.append(adaptive)
+            
+            for variant in variants:
+                # Upscale for better recognition
+                scale = 4
+                scaled = cv2.resize(variant, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                
+                # Convert back to BGR for EasyOCR
+                scaled_bgr = cv2.cvtColor(scaled, cv2.COLOR_GRAY2BGR)
+                
+                # Use EasyOCR with allowlist
+                results = self.easyocr_reader.readtext(
+                    scaled_bgr,
+                    detail=0,
+                    allowlist='0123456789AKQJT',
+                    paragraph=False
+                )
+                
+                for text in results:
+                    text_clean = text.upper().replace(' ', '').replace('\n', '').replace('\t', '')
+                    
+                    # Check for "10" first
+                    if '10' in text_clean:
+                        detected_ranks.append('10')
+                        continue
+                    
+                    # Check for 'T' or variations followed by 'O' or '0'
+                    if len(text_clean) >= 2:
+                        for i in range(len(text_clean) - 1):
+                            if text_clean[i] in ['1', 'I', 'T', 'l', '|', 'i'] and text_clean[i+1] in ['0', 'O']:
+                                detected_ranks.append('10')
+                                break
+                    
+                    # Parse individual characters
+                    for char in text_clean:
+                        if char in self.rank_map:
+                            rank = self.rank_map[char]
+                            if rank in self.valid_ranks:
+                                detected_ranks.append(rank)
+        except Exception as e:
+            # Silent fail, will try Tesseract fallback
+            pass
+        
+        return detected_ranks
+
     def detect_single_card(self, img: np.ndarray) -> Optional[str]:
         """
         Detect a single card rank from an image.
         Optimized for detecting one card with high accuracy.
+        Uses EasyOCR first, falls back to Tesseract if needed.
         
         Args:
             img: Input image containing a single card
@@ -158,24 +271,38 @@ class CardDetector:
         Returns:
             Detected card rank or None
         """
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Try multiple preprocessing methods for better "10" detection
         all_ranks = []
         
-        # Method 1: Otsu thresholding (usually best)
+        # Method 1: Try EasyOCR first (if available)
+        if self.easyocr_reader:
+            easyocr_ranks = self._extract_ranks_easyocr(img)
+            all_ranks.extend(easyocr_ranks)
+            
+            # If EasyOCR found something with confidence, use it
+            if easyocr_ranks:
+                from collections import Counter
+                rank_counts = Counter(easyocr_ranks)
+                # If we have a clear winner (appears multiple times), return it
+                most_common = rank_counts.most_common(1)[0]
+                if most_common[1] >= 2:  # Appears at least twice
+                    return most_common[0]
+        
+        # Method 2: Fallback to Tesseract with multiple preprocessing methods
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Otsu thresholding
         _, binary1 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         all_ranks.extend(self._extract_ranks_from_image(binary1, scale=5))
         
-        # Method 2: Inverted Otsu (for dark text on light background)
+        # Inverted Otsu (for dark text on light background)
         binary1_inv = cv2.bitwise_not(binary1)
         all_ranks.extend(self._extract_ranks_from_image(binary1_inv, scale=5))
         
-        # Method 3: High threshold
+        # High threshold
         _, binary2 = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
         all_ranks.extend(self._extract_ranks_from_image(binary2, scale=5))
         
-        # Method 4: Adaptive threshold
+        # Adaptive threshold
         adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                          cv2.THRESH_BINARY, 11, 2)
         all_ranks.extend(self._extract_ranks_from_image(adaptive, scale=5))
