@@ -44,6 +44,61 @@ class CardDetector:
         
         self.valid_ranks = {'2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'}
         
+    def _parse_ranks_from_text(self, text: str) -> List[str]:
+        """
+        Parse OCR text into valid card ranks.
+        
+        Args:
+            text: Raw OCR text
+            
+        Returns:
+            List of detected ranks in order of appearance
+        """
+        ranks: List[str] = []
+        
+        if not text:
+            return ranks
+        
+        text_clean = text.upper().replace(' ', '').replace('\n', '').replace('\t', '')
+        
+        i = 0
+        while i < len(text_clean):
+            char = text_clean[i]
+            
+            # Handle "10" variants
+            if i < len(text_clean) - 1:
+                next_char = text_clean[i + 1]
+                if char in ['1', 'I', 'T', 'l', '|', 'i'] and next_char in ['0', 'O']:
+                    ranks.append('10')
+                    i += 2
+                    continue
+                if char == '1' and next_char == '0':
+                    ranks.append('10')
+                    i += 2
+                    continue
+            
+            # Direct mapping
+            if char in self.rank_map:
+                rank = self.rank_map[char]
+                if rank in self.valid_ranks:
+                    ranks.append(rank)
+            elif char == '1':
+                # Handle standalone 1 that might be part of 10 but OCR split it
+                if i < len(text_clean) - 1 and text_clean[i + 1] == '0':
+                    ranks.append('10')
+                    i += 2
+                    continue
+            
+            i += 1
+        
+        # Preserve order but remove consecutive duplicates
+        deduped: List[str] = []
+        for rank in ranks:
+            if not deduped or deduped[-1] != rank:
+                deduped.append(rank)
+        
+        return deduped
+    
     def preprocess_image(self, img: np.ndarray, denoise: bool = True) -> np.ndarray:
         """
         Preprocess image for better card detection.
@@ -233,26 +288,7 @@ class CardDetector:
                 )
                 
                 for text in results:
-                    text_clean = text.upper().replace(' ', '').replace('\n', '').replace('\t', '')
-                    
-                    # Check for "10" first
-                    if '10' in text_clean:
-                        detected_ranks.append('10')
-                        continue
-                    
-                    # Check for 'T' or variations followed by 'O' or '0'
-                    if len(text_clean) >= 2:
-                        for i in range(len(text_clean) - 1):
-                            if text_clean[i] in ['1', 'I', 'T', 'l', '|', 'i'] and text_clean[i+1] in ['0', 'O']:
-                                detected_ranks.append('10')
-                                break
-                    
-                    # Parse individual characters
-                    for char in text_clean:
-                        if char in self.rank_map:
-                            rank = self.rank_map[char]
-                            if rank in self.valid_ranks:
-                                detected_ranks.append(rank)
+                    detected_ranks.extend(self._parse_ranks_from_text(text))
         except Exception as e:
             # Silent fail, will try Tesseract fallback
             pass
@@ -317,6 +353,86 @@ class CardDetector:
         
         return None
     
+    def detect_cards_in_combined_region(self, img: np.ndarray, expected_count: int = 2) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Detect multiple card ranks from a single region that contains several cards.
+        
+        Args:
+            img: Input image containing multiple cards
+            expected_count: How many cards to detect (default: 2)
+            
+        Returns:
+            Tuple of detected ranks (missing entries will be None)
+        """
+        candidates: List[Tuple[float, float, str]] = []  # (center_x, confidence, rank)
+        
+        # Attempt EasyOCR with bounding boxes to keep ordering
+        if self.easyocr_reader:
+            try:
+                results = self.easyocr_reader.readtext(
+                    img,
+                    detail=1,
+                    allowlist='0123456789AKQJT',
+                    paragraph=False
+                )
+                
+                for entry in results:
+                    if isinstance(entry, tuple) and len(entry) == 3:
+                        bbox, text, confidence = entry
+                    elif isinstance(entry, list) and len(entry) >= 3:
+                        bbox, text, confidence = entry[0], entry[1], entry[2]
+                    else:
+                        continue
+                    
+                    ranks = self._parse_ranks_from_text(text)
+                    if not ranks:
+                        continue
+                    
+                    # Compute center x position of detection
+                    xs = [point[0] for point in bbox] if bbox else []
+                    center_x = sum(xs) / len(xs) if xs else 0.0
+                    
+                    for rank in ranks:
+                        candidates.append((center_x, float(confidence) if confidence is not None else 0.0, rank))
+            except Exception:
+                pass
+        
+        selected_ranks: List[str] = []
+        
+        if candidates:
+            # Sort by horizontal position, then by confidence (descending)
+            candidates.sort(key=lambda item: (item[0], -item[1]))
+            
+            for _, _, rank in candidates:
+                if rank in selected_ranks:
+                    continue
+                selected_ranks.append(rank)
+                if len(selected_ranks) >= expected_count:
+                    break
+        
+        # Fallback: split region into equal parts and run single-card detection
+        if len(selected_ranks) < expected_count:
+            h, w = img.shape[:2]
+            if w > 0 and expected_count > 0:
+                segment_width = w // expected_count
+                for idx in range(expected_count):
+                    start_x = max(0, idx * segment_width - 5)  # small overlap to capture edges
+                    end_x = min(w, (idx + 1) * segment_width + 5)
+                    if start_x >= end_x:
+                        continue
+                    segment = img[:, start_x:end_x]
+                    rank = self.detect_single_card(segment)
+                    if rank:
+                        selected_ranks.append(rank)
+                        if len(selected_ranks) >= expected_count:
+                            break
+        
+        # Pad with None to expected_count
+        while len(selected_ranks) < expected_count:
+            selected_ranks.append(None)
+        
+        return tuple(selected_ranks[:expected_count])  # type: ignore[return-value]
+    
     def _extract_ranks_from_image(self, img: np.ndarray, scale: int = 4) -> List[str]:
         """
         Extract card ranks from a preprocessed image using OCR.
@@ -350,34 +466,7 @@ class CardDetector:
                     # More permissive config for "10"
                     config = f'--oem 3 --psm {psm} -c tessedit_char_whitelist=A023456789TJQK10'
                     text = pytesseract.image_to_string(scaled, config=config).strip()
-                    text_clean = text.upper().replace(' ', '').replace('\n', '').replace('\t', '')
-                    
-                    # Check for "10" first (two characters together)
-                    if '10' in text_clean:
-                        detected_ranks.append('10')
-                        continue  # If we found 10, skip individual parsing
-                    
-                    # Check for 'T' or 'I' followed by 'O' or '0' (common misreads of "10")
-                    if len(text_clean) >= 2:
-                        for i in range(len(text_clean) - 1):
-                            if text_clean[i] in ['1', 'I', 'T', 'l', '|'] and text_clean[i+1] in ['0', 'O']:
-                                detected_ranks.append('10')
-                                break
-                    
-                    # Parse individual characters
-                    i = 0
-                    while i < len(text_clean):
-                        # Check for "10" as a unit
-                        if i < len(text_clean) - 1 and text_clean[i:i+2] == '10':
-                            detected_ranks.append('10')
-                            i += 2
-                        elif text_clean[i] in self.rank_map:
-                            rank = self.rank_map[text_clean[i]]
-                            if rank in self.valid_ranks:
-                                detected_ranks.append(rank)
-                            i += 1
-                        else:
-                            i += 1
+                    detected_ranks.extend(self._parse_ranks_from_text(text))
                 except Exception:
                     pass
         except Exception:

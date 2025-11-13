@@ -10,6 +10,7 @@ An automated poker hand monitoring system that uses OCR to detect cards and make
 - **Visual Feedback**: Live preview window showing detected cards
 - **Sound Notifications**: Beep alerts for playable hands
 - **Persistent Settings**: Saves card regions and button positions
+- **Combined Capture**: Select one region containing both card ranks for faster setup
 - **Flexible Strategy**: Configurable hand evaluation rules
 
 ## Prerequisites
@@ -53,3 +54,7 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 - **Use Case**: Automatic fallback if EasyOCR fails or isn't installed
 
 The system automatically uses EasyOCR if available, falling back to Tesseract when needed.
+
+## Selecting Card Regions
+
+When you choose option `1` in the menu, you'll be prompted to select a single region that contains both card ranks. The detector automatically finds the two ranks in that area. You can rerun the setup at any time to recapture the region. All selections are saved to `settings.json`.

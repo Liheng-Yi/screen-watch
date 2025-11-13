@@ -31,6 +31,9 @@ class PokerMonitor:
         self.is_running = False
         self.preview_enabled = True
         self._preview_warning_printed = False
+        self.use_combined_region = False
+        self.combined_region = None
+        self.combined_capture = None
         
         # Load saved settings if they exist
         self.load_settings()
@@ -44,14 +47,22 @@ class PokerMonitor:
                     self.card1_region = settings.get('card1_region')
                     self.card2_region = settings.get('card2_region')
                     self.fold_button_position = settings.get('fold_button_position')
+                    self.use_combined_region = settings.get('use_combined_region', False)
+                    self.combined_region = settings.get('combined_region')
                     
                     # Initialize capture objects if regions exist
-                    if self.card1_region:
-                        self.capture1 = ScreenCapture()
-                        self.capture1.set_region(self.card1_region)
-                    if self.card2_region:
-                        self.capture2 = ScreenCapture()
-                        self.capture2.set_region(self.card2_region)
+                    if self.use_combined_region and self.combined_region:
+                        self.combined_capture = ScreenCapture()
+                        self.combined_capture.set_region(self.combined_region)
+                        self.capture1 = None
+                        self.capture2 = None
+                    else:
+                        if self.card1_region:
+                            self.capture1 = ScreenCapture()
+                            self.capture1.set_region(self.card1_region)
+                        if self.card2_region:
+                            self.capture2 = ScreenCapture()
+                            self.capture2.set_region(self.card2_region)
                     
                     print("Loaded saved settings")
             except Exception as e:
@@ -62,7 +73,9 @@ class PokerMonitor:
         settings = {
             'card1_region': self.card1_region,
             'card2_region': self.card2_region,
-            'fold_button_position': self.fold_button_position
+            'fold_button_position': self.fold_button_position,
+            'use_combined_region': self.use_combined_region,
+            'combined_region': self.combined_region
         }
         try:
             with open('settings.json', 'w') as f:
@@ -74,6 +87,8 @@ class PokerMonitor:
     def setup_card_regions(self):
         """Let user select the two card regions."""
         print("\n=== Select Card Regions ===")
+        self.preview_enabled = True
+        self._preview_warning_printed = False
         
         # Show available monitors
         monitors = self.selector.get_monitors_info()
@@ -81,36 +96,27 @@ class PokerMonitor:
         for m in monitors:
             print(f"  Monitor {m['number']}: {m['width']}x{m['height']} at position ({m['left']}, {m['top']})")
         
-        # Select first card region
-        print("\n--- FIRST CARD ---")
-        print("Click and drag to select the area where your FIRST card appears")
-        print("(Select just one card, as small as possible around the card rank)")
-        region1 = self.selector.select_region()
+        print("\n--- COMBINED REGION ---")
+        print("Click and drag to select the area that contains BOTH card ranks.")
+        print("Try to keep the selection tight around the ranks (suits are okay inside the area).")
+        region = self.selector.select_region()
         
-        if not region1 or region1['width'] <= 0 or region1['height'] <= 0:
-            print("Invalid region selected for first card")
+        if not region or region['width'] <= 0 or region['height'] <= 0:
+            print("Invalid region selected for combined cards")
             return False
         
-        self.card1_region = region1
-        self.capture1 = ScreenCapture()
-        self.capture1.set_region(region1)
-        print(f"✓ First card region set: {region1}")
+        self.use_combined_region = True
+        self.combined_region = region
+        self.combined_capture = ScreenCapture()
+        self.combined_capture.set_region(region)
         
-        # Select second card region
-        print("\n--- SECOND CARD ---")
-        print("Click and drag to select the area where your SECOND card appears")
-        print("(Select just one card, as small as possible around the card rank)")
-        region2 = self.selector.select_region()
+        # Clear individual captures
+        self.card1_region = None
+        self.card2_region = None
+        self.capture1 = None
+        self.capture2 = None
         
-        if not region2 or region2['width'] <= 0 or region2['height'] <= 0:
-            print("Invalid region selected for second card")
-            return False
-        
-        self.card2_region = region2
-        self.capture2 = ScreenCapture()
-        self.capture2.set_region(region2)
-        print(f"✓ Second card region set: {region2}")
-        
+        print(f"✓ Combined card region set: {region}")
         self.save_settings()
         return True
     
@@ -138,9 +144,45 @@ class PokerMonitor:
     
     def test_detection(self):
         """Test card detection on current screen."""
-        if not self.card1_region or not self.card2_region:
-            print("Please set up card regions first")
+        if self.use_combined_region:
+            if not self.combined_capture:
+                print("Please set up card regions first")
+                return
+            
+            print("\n=== Testing Card Detection (Combined Region) ===")
+            img = self.combined_capture.capture()
+            
+            if img is not None:
+                print("Detecting cards...")
+                rank1, rank2 = self.detector.detect_cards_in_combined_region(img, expected_count=2)
+                
+                print(f"Detected ranks: {rank1 if rank1 else '?'} and {rank2 if rank2 else '?'}")
+                
+                try:
+                    preview = cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
+                    overlay = preview.copy()
+                    cv2.rectangle(overlay, (0, 0), (preview.shape[1], 50), (0, 0, 0), -1)
+                    cv2.addWeighted(overlay, 0.7, preview, 0.3, 0, preview)
+                    cards_text = f"{rank1 if rank1 else '?'} | {rank2 if rank2 else '?'}"
+                    cv2.putText(preview, cards_text, (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    cv2.imshow('Combined Cards (Press any key to close)', preview)
+                    cv2.waitKey(0)
+                    cv2.destroyAllWindows()
+                except cv2.error:
+                    pass
+            else:
+                print("Failed to capture screen")
             return
+        
+        if self.use_combined_region:
+            if not self.combined_capture:
+                print("Please set up card regions first")
+                return
+        else:
+            if not self.card1_region or not self.card2_region:
+                print("Please set up card regions first")
+                return
         
         print("\n=== Testing Card Detection ===")
         
@@ -258,9 +300,14 @@ class PokerMonitor:
         Args:
             show_preview: If True, shows live preview window
         """
-        if not self.card1_region or not self.card2_region:
-            print("Please set up card regions first")
-            return
+        if self.use_combined_region:
+            if not self.combined_capture:
+                print("Please set up card regions first")
+                return
+        else:
+            if not self.card1_region or not self.card2_region:
+                print("Please set up card regions first")
+                return
         
         print("\n=== Starting Monitoring ===")
         print("Press Ctrl+C in console or 'Q' in preview window to stop")
@@ -278,15 +325,27 @@ class PokerMonitor:
                 start_time = time.time()
                 frame_count += 1
                 
-                # Capture both cards
-                img1 = self.capture1.capture()
-                img2 = self.capture2.capture()
+                rank1 = None
+                rank2 = None
+                preview_mode = None
+                preview_images = None
                 
-                if img1 is not None and img2 is not None:
-                    # Detect both cards
-                    rank1 = self.detector.detect_single_card(img1)
-                    rank2 = self.detector.detect_single_card(img2)
-                    
+                if self.use_combined_region:
+                    img_combined = self.combined_capture.capture()
+                    if img_combined is not None:
+                        rank1, rank2 = self.detector.detect_cards_in_combined_region(img_combined, expected_count=2)
+                        preview_mode = 'combined'
+                        preview_images = img_combined
+                else:
+                    img1 = self.capture1.capture()
+                    img2 = self.capture2.capture()
+                    if img1 is not None and img2 is not None:
+                        rank1 = self.detector.detect_single_card(img1)
+                        rank2 = self.detector.detect_single_card(img2)
+                        preview_mode = 'separate'
+                        preview_images = (img1, img2)
+                
+                if preview_mode:
                     current_hand = (rank1, rank2)
                     
                     # Only process if cards changed
@@ -317,55 +376,58 @@ class PokerMonitor:
                     
                     # Show live preview
                     if show_preview and self.preview_enabled:
-                        # Create combined visualization
-                        h1, w1 = img1.shape[:2]
-                        h2, w2 = img2.shape[:2]
-                        
-                        # Scale up images for visibility (5x smaller than before)
-                        scale_factor = 5
-                        img1_scaled = cv2.resize(img1, (w1 * scale_factor, h1 * scale_factor), 
-                                                interpolation=cv2.INTER_NEAREST)
-                        img2_scaled = cv2.resize(img2, (w2 * scale_factor, h2 * scale_factor), 
-                                                interpolation=cv2.INTER_NEAREST)
-                        
-                        # Make both images same height for side-by-side display
-                        h1_s, w1_s = img1_scaled.shape[:2]
-                        h2_s, w2_s = img2_scaled.shape[:2]
-                        max_height = max(h1_s, h2_s)
-                        
-                        if h1_s < max_height:
-                            img1_scaled = cv2.resize(img1_scaled, (int(w1_s * max_height / h1_s), max_height))
-                        if h2_s < max_height:
-                            img2_scaled = cv2.resize(img2_scaled, (int(w2_s * max_height / h2_s), max_height))
-                        
-                        # Add some padding between cards
-                        padding = np.ones((max_height, 10, 3), dtype=np.uint8) * 50
-                        
-                        # Combine images side by side with padding
-                        display_img = np.hstack([img1_scaled, padding, img2_scaled])
-                        
-                        # Add overlay with info (smaller)
-                        overlay = display_img.copy()
-                        cv2.rectangle(overlay, (0, 0), (display_img.shape[1], 50), (0, 0, 0), -1)
-                        cv2.addWeighted(overlay, 0.7, display_img, 0.3, 0, display_img)
-                        
-                        # Add text (smaller font)
-                        cards_text = f"{rank1 if rank1 else '?'} | {rank2 if rank2 else '?'}"
-                        color = (0, 255, 0) if (rank1 and rank2) else (0, 165, 255)
-                        cv2.putText(display_img, cards_text, (10, 30),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                        
-                        # Show window with always on top flag
                         window_name = 'Poker Monitor - Press Q to quit'
                         try:
-                            cv2.imshow(window_name, display_img)
-                            cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+                            if preview_mode == 'separate' and isinstance(preview_images, tuple):
+                                img1, img2 = preview_images
+                                h1, w1 = img1.shape[:2]
+                                h2, w2 = img2.shape[:2]
+                                
+                                scale_factor = 5
+                                img1_scaled = cv2.resize(img1, (w1 * scale_factor, h1 * scale_factor), 
+                                                        interpolation=cv2.INTER_NEAREST)
+                                img2_scaled = cv2.resize(img2, (w2 * scale_factor, h2 * scale_factor), 
+                                                        interpolation=cv2.INTER_NEAREST)
+                                
+                                h1_s, w1_s = img1_scaled.shape[:2]
+                                h2_s, w2_s = img2_scaled.shape[:2]
+                                max_height = max(h1_s, h2_s)
+                                
+                                if h1_s < max_height:
+                                    img1_scaled = cv2.resize(img1_scaled, (int(w1_s * max_height / h1_s), max_height))
+                                if h2_s < max_height:
+                                    img2_scaled = cv2.resize(img2_scaled, (int(w2_s * max_height / h2_s), max_height))
+                                
+                                padding = np.ones((max_height, 10, 3), dtype=np.uint8) * 50
+                                display_img = np.hstack([img1_scaled, padding, img2_scaled])
+                            elif preview_mode == 'combined' and isinstance(preview_images, np.ndarray):
+                                img_combined = preview_images
+                                scale_factor = 4
+                                h, w = img_combined.shape[:2]
+                                display_img = cv2.resize(
+                                    img_combined, (max(w * scale_factor, 1), max(h * scale_factor, 1)),
+                                    interpolation=cv2.INTER_NEAREST
+                                )
+                            else:
+                                display_img = None
                             
-                            # Check for quit key
-                            key = cv2.waitKey(1) & 0xFF
-                            if key == ord('q') or key == ord('Q') or key == 27:  # Q or ESC
-                                print("\nStopping monitoring...")
-                                break
+                            if display_img is not None:
+                                overlay = display_img.copy()
+                                cv2.rectangle(overlay, (0, 0), (display_img.shape[1], 50), (0, 0, 0), -1)
+                                cv2.addWeighted(overlay, 0.7, display_img, 0.3, 0, display_img)
+                                
+                                cards_text = f"{rank1 if rank1 else '?'} | {rank2 if rank2 else '?'}"
+                                color = (0, 255, 0) if (rank1 and rank2) else (0, 165, 255)
+                                cv2.putText(display_img, cards_text, (10, 30),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                                
+                                cv2.imshow(window_name, display_img)
+                                cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+                                
+                                key = cv2.waitKey(1) & 0xFF
+                                if key == ord('q') or key == ord('Q') or key == 27:  # Q or ESC
+                                    print("\nStopping monitoring...")
+                                    break
                         except cv2.error as e:
                             self.preview_enabled = False
                             if not self._preview_warning_printed:
@@ -396,7 +458,7 @@ class PokerMonitor:
             print("="*50)
             print("1. Set up card regions and start monitoring")
             print("2. Set up fold button location")
-            print("3. Test card detection")
+            print("3. Start monitoring")
             print("4. Exit")
             print("="*50)
             
@@ -416,7 +478,7 @@ class PokerMonitor:
             elif choice == '2':
                 self.setup_fold_button()
             elif choice == '3':
-                self.test_detection()
+                self.run_monitoring(show_preview=True)
             elif choice == '4':
                 print("Exiting...")
                 break
